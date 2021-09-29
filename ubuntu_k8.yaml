@@ -1,0 +1,158 @@
+Parameters:
+  KeyPairName:
+    Type: String
+
+Resources:
+  ApplicationSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from everywhere
+      SecurityGroupIngress:
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+  Control:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - WorkerOne
+      - WorkerTwo 
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo hostnamectl set-hostname control
+
+          PRIVATE=$(curl http://169.254.169.254/latest/meta-data/local-ipv4 -s)
+          echo  "$PRIVATE control" >> /etc/hosts
+          echo  "${WorkerOne.PrivateIp} worker1" >> /etc/hosts
+          echo  "${WorkerTwo.PrivateIp} worker2" >> /etc/hosts
+
+          cat << EOF | sudo tee /etc/modules-load.d/containerd.conf
+          overlay
+          br_netfilter
+          EOF
+          sudo modprobe overlay
+          sudo modprobe br_netfilter
+          cat << EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          EOF
+          sudo sysctl --system
+          sudo apt-get update && sudo apt-get install -y containerd
+          sudo mkdir -p /etc/containerd
+          sudo containerd config default | sudo tee /etc/containerd/config.toml
+          sudo systemctl restart containerd
+          sudo swapoff -a
+          sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+          sudo apt-get update && sudo apt-get install -y apt-transport-https curl
+          curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+          cat << EOF | sudo tee /etc/apt/sources.list.d/kubernetes.list
+          deb https://apt.kubernetes.io/ kubernetes-xenial main
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y kubelet=1.21.0-00 kubeadm=1.21.0-00 kubectl=1.21.0-00
+          sudo apt-mark hold kubelet kubeadm kubectl
+          
+          sudo kubeadm init --pod-network-cidr 192.168.0.0/16 --kubernetes-version 1.21.0
+          sudo mkdir -p /home/ubuntu/.kube
+          sudo cp -i /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+          #### sudo chown $(id -u):$(id -g) /home/ubuntu/.kube/config
+          sudo chown 1000:1000 /home/ubuntu/.kube/config
+          #### kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+          sudo -H -u ubuntu bash -c 'kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml' > /home/ubuntu/bootstraplogs.txt 2>&1
+          sudo kubeadm token create --print-join-command > /home/ubuntu/join.txt
+          sudo sed -i -e 's/^/sudo /' /home/ubuntu/join.txt
+      ImageId: ami-055147723b7bca09a
+      InstanceType: t2.medium
+      SecurityGroupIds: 
+        - !Ref ApplicationSG
+      KeyName: !Ref KeyPairName
+      Tags:
+        - Key: "Name"
+          Value: control
+
+  WorkerOne:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo hostnamectl set-hostname worker1
+
+          cat << EOF | sudo tee /etc/modules-load.d/containerd.conf
+          overlay
+          br_netfilter
+          EOF
+          sudo modprobe overlay
+          sudo modprobe br_netfilter
+          cat << EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          EOF
+          sudo sysctl --system
+          sudo apt-get update && sudo apt-get install -y containerd
+          sudo mkdir -p /etc/containerd
+          sudo containerd config default | sudo tee /etc/containerd/config.toml
+          sudo systemctl restart containerd
+          sudo swapoff -a
+          sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+          sudo apt-get update && sudo apt-get install -y apt-transport-https curl
+          curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+          cat << EOF | sudo tee /etc/apt/sources.list.d/kubernetes.list
+          deb https://apt.kubernetes.io/ kubernetes-xenial main
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y kubelet=1.21.0-00 kubeadm=1.21.0-00 kubectl=1.21.0-00
+          sudo apt-mark hold kubelet kubeadm kubectl
+      ImageId: ami-055147723b7bca09a
+      InstanceType: t2.medium
+      SecurityGroupIds: 
+        - !Ref ApplicationSG
+      KeyName: !Ref KeyPairName
+      Tags:
+        - Key: "Name"
+          Value: worker1
+
+  WorkerTwo:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo hostnamectl set-hostname worker2
+
+          cat << EOF | sudo tee /etc/modules-load.d/containerd.conf
+          overlay
+          br_netfilter
+          EOF
+          sudo modprobe overlay
+          sudo modprobe br_netfilter
+          cat << EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          EOF
+          sudo sysctl --system
+          sudo apt-get update && sudo apt-get install -y containerd
+          sudo mkdir -p /etc/containerd
+          sudo containerd config default | sudo tee /etc/containerd/config.toml
+          sudo systemctl restart containerd
+          sudo swapoff -a
+          sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+          sudo apt-get update && sudo apt-get install -y apt-transport-https curl
+          curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+          cat << EOF | sudo tee /etc/apt/sources.list.d/kubernetes.list
+          deb https://apt.kubernetes.io/ kubernetes-xenial main
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y kubelet=1.21.0-00 kubeadm=1.21.0-00 kubectl=1.21.0-00
+          sudo apt-mark hold kubelet kubeadm kubectl
+      ImageId: ami-055147723b7bca09a
+      InstanceType: t2.medium
+      SecurityGroupIds: 
+        - !Ref ApplicationSG
+      KeyName: !Ref KeyPairName
+      Tags:
+        - Key: "Name"
+          Value: worker2

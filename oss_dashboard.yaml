@@ -1,0 +1,351 @@
+Parameters:
+  KeyPairName:
+    Type: String
+
+Resources:
+  ApplicationSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from everywhere
+      SecurityGroupIngress:
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+
+  TykOSS:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          ################### INSTALLING PRE-REQUISITES ###################
+          sudo yum update -y
+          sudo yum install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm -y
+          sudo yum install python34 -y
+          sudo yum install pygpgme yum-utils wget -y
+
+
+          ################### INSTALLING REDIS ############################
+          sudo yum install -y redis
+          sudo service redis start
+
+
+          ################### INSTALLING OSS TYK GATEWAY ##################
+          sudo cat > /etc/yum.repos.d/tyk_tyk-gateway.repo <<EOF
+          [tyk_tyk-gateway]
+          name=tyk_tyk-gateway
+          baseurl=https://packagecloud.io/tyk/tyk-gateway/el/7/\$basearch
+          repo_gpgcheck=1
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://keyserver.tyk.io/tyk.io.rpm.signing.key.2020
+                https://packagecloud.io/tyk/tyk-gateway/gpgkey
+          sslverify=1
+          sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+          metadata_expire=300
+          EOF
+
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='tyk_tyk-gateway' --enablerepo=epel
+
+          sudo yum install tyk-gateway -y
+
+          sudo /opt/tyk-gateway/install/setup.sh \
+          --listenport=8080 \
+          --redishost=localhost \
+          --redisport=6379 \
+          --domain="0.0.0.0"
+
+          sudo service tyk-gateway start
+
+
+          ################### INSTALLING MONGO ##################
+          sudo cat > /etc/yum.repos.d/mongodb-org-4.4.repo <<EOF
+          [mongodb-org-4.4]
+          name=MongoDB Repository
+          baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/4.4/x86_64/
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://www.mongodb.org/static/pgp/server-4.4.asc
+          EOF
+
+          sudo yum install mongodb-org -y
+
+          sudo service mongod start
+
+
+          ################### INSTALLING PUMP ##################
+          sudo cat > /etc/yum.repos.d/tyk_tyk-pump.repo <<EOF
+          [tyk_tyk-pump]
+          name=tyk_tyk-pump
+          baseurl=https://packagecloud.io/tyk/tyk-pump/el/7/\$basearch
+          repo_gpgcheck=1
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://keyserver.tyk.io/tyk.io.rpm.signing.key.2020
+                https://packagecloud.io/tyk/tyk-pump/gpgkey
+          sslverify=1
+          sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+          metadata_expire=300
+          EOF
+
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='tyk_tyk-pump'
+
+          sudo yum install tyk-pump -y
+
+          sudo /opt/tyk-pump/install/setup.sh \
+          --redishost=localhost \
+          --redisport=6379 \
+          --mongo=mongodb://localhost/tyk_analytics
+
+          sudo service tyk-pump start
+
+
+          ################### INSTALLING TYK SYNC ##################
+          sudo yum install -y docker
+          sudo service docker start
+          sudo usermod -a -G docker ec2-user
+          docker pull tykio/tyk-sync:v1.2.0
+
+
+
+          #### ADDING API DEFINITIONS
+          sudo cat > /home/ec2-user/keyless.json <<EOF
+          {
+            "name": "Keyless Httpbin",
+            "api_id": "888",
+            "org_id": "default",
+            "use_keyless": true,
+            "auth": {
+              "auth_header_name": ""
+            },
+            "version_data": {
+              "not_versioned": true,
+              "versions": {
+                "Default": {
+                  "name": "Default",
+                  "expires": "3000-01-02 15:04",
+                  "use_extended_paths": true,
+                  "extended_paths": {
+                    "ignored": [],
+                    "white_list": [],
+                    "black_list": []
+                  }
+                }
+              }
+            },
+            "proxy": {
+              "listen_path": "/open/",
+              "target_url": "http://httpbin.org",
+              "strip_listen_path": true
+            },
+            "enable_batch_request_support": true
+          }
+          EOF
+
+          sudo cat > /home/ec2-user/protected.json <<EOF
+          {
+            "name": "AuthToken Httpbin",
+            "api_id": "222",
+            "org_id": "default",
+            "auth": {
+              "auth_header_name": "Authorization"
+            },
+            "version_data": {
+              "not_versioned": true,
+              "versions": {
+                "Default": {
+                  "name": "Default",
+                  "expires": "3000-01-02 15:04",
+                  "use_extended_paths": true,
+                  "extended_paths": {
+                    "ignored": [],
+                    "white_list": [],
+                    "black_list": []
+                  }
+                }
+              }
+            },
+            "proxy": {
+              "listen_path": "/closed/",
+              "target_url": "http://httpbin.org",
+              "strip_listen_path": true
+            },
+            "enable_batch_request_support": true
+          }
+          EOF
+
+          sudo cat > /home/ec2-user/token.json <<EOF
+          {
+            "allowance": 1000,
+            "rate": 3,
+            "per": 8,
+            "expires": -1,
+            "quota_max": -1,
+            "quota_renews": 1406121006,
+            "quota_remaining": 0,
+            "quota_renewal_rate": 60,
+            "access_rights": {
+              "222": {
+                "api_name": "AuthToken Httpbin",
+                "api_id": "222"
+              }
+            },
+            "org_id": "",
+            "basic_auth_data": {
+              "password": "",
+              "hash_type": ""
+            },
+            "hmac_enabled": false,
+            "hmac_string": "",
+            "is_inactive": false,
+            "apply_policy_id": "",
+            "apply_policies": [],
+            "monitor": {
+              "trigger_limits": []
+            }
+          }
+          EOF
+
+            
+      ImageId: ami-0ba0ce0c11eb723a1
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref ApplicationSG
+      KeyName: !Ref KeyPairName
+      Tags:
+        - Key: "Name"
+          Value: open-source
+
+  TykDashboard:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          ################### INSTALLING PRE-REQUISITES ###################
+          yum update -y
+          yum install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm -y
+          yum install python34 -y
+          yum install pygpgme yum-utils wget -y
+
+          ################### INSTALLING TYK DASHBOARD & DATABASES ###################
+          cat > /etc/yum.repos.d/tyk_tyk-dashboard.repo <<EOF
+          [tyk_tyk-dashboard]
+          name=tyk_tyk-dashboard
+          baseurl=https://packagecloud.io/tyk/tyk-dashboard/el/7/\$basearch
+          repo_gpgcheck=1
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://keyserver.tyk.io/tyk.io.rpm.signing.key.2020
+                 https://packagecloud.io/tyk/tyk-dashboard/gpgkey
+          sslverify=1
+          sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+          metadata_expire=300
+          EOF
+
+          cat > /etc/yum.repos.d/mongodb-org-4.4.repo <<EOF
+          [mongodb-org-4.4]
+          name=MongoDB Repository
+          baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/4.4/x86_64/
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://www.mongodb.org/static/pgp/server-4.4.asc
+          EOF
+
+          yum -q makecache -y --disablerepo='*' --enablerepo='tyk_tyk-dashboard'
+
+          yum install mongodb-org tyk-dashboard redis -y
+
+          service mongod start
+          service redis start
+
+          dash=$(curl http://169.254.169.254/latest/meta-data/public-ipv4 -s)
+
+          /opt/tyk-dashboard/install/setup.sh \
+          --listenport=3000 \
+          --redishost=localhost \
+          --redisport=6379 \
+          --mongo=mongodb://localhost/tyk_analytics \
+          --tyk_api_hostname=$dash:8080 \
+          --tyk_node_hostname=http://localhost \
+          --tyk_node_port=8080 \
+          --portal_root=/portal \
+          --domain="$dash"
+
+          service tyk-dashboard start
+
+          ################### INSTALLING TYK PUMP ###################
+          cat > /etc/yum.repos.d/tyk_tyk-pump.repo <<EOF
+          [tyk_tyk-pump]
+          name=tyk_tyk-pump
+          baseurl=https://packagecloud.io/tyk/tyk-pump/el/7/\$basearch
+          repo_gpgcheck=1
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://keyserver.tyk.io/tyk.io.rpm.signing.key.2020
+                 https://packagecloud.io/tyk/tyk-pump/gpgkey
+          sslverify=1
+          sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+          metadata_expire=300
+          EOF
+
+          yum -q makecache -y --disablerepo='*' --enablerepo='tyk_tyk-pump'
+
+          yum install tyk-pump -y
+
+          /opt/tyk-pump/install/setup.sh \
+          --redishost=localhost \
+          --redisport=6379 \
+          --mongo=mongodb://localhost/tyk_analytics
+
+          service tyk-pump start
+
+          ################### INSTALLING TYK GATEWAY ###################
+          cat > /etc/yum.repos.d/tyk_tyk-gateway.repo <<EOF
+          [tyk_tyk-gateway]
+          name=tyk_tyk-gateway
+          baseurl=https://packagecloud.io/tyk/tyk-gateway/el/7/\$basearch
+          repo_gpgcheck=1
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://keyserver.tyk.io/tyk.io.rpm.signing.key.2020
+                 https://packagecloud.io/tyk/tyk-gateway/gpgkey
+          sslverify=1
+          sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+          metadata_expire=300
+          EOF
+
+          yum -q makecache -y --disablerepo='*' --enablerepo='tyk_tyk-gateway' --enablerepo=epel
+
+          yum install tyk-gateway -y
+
+          /opt/tyk-gateway/install/setup.sh \
+          --dashboard=1 \
+          --listenport=8080 \
+          --redishost=localhost \
+          --redisport=6379
+
+          service tyk-gateway start
+
+          ################### INSTALLING TYK SYNC ##################
+          sudo yum install -y docker
+          sudo service docker start
+          sudo usermod -a -G docker ec2-user
+          docker pull tykio/tyk-sync:v1.2.0
+
+
+          service redis enable
+          service mongod enable
+          service tyk-dashboard enable
+          service tyk-pump enable
+          service tyk-gateway enable
+
+      ImageId: ami-0ba0ce0c11eb723a1
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref ApplicationSG
+      KeyName: !Ref KeyPairName
+      Tags:
+        - Key: "Name"
+          Value: Dashboard
